@@ -1,0 +1,23 @@
+{
+  "name": "looonger-feishu-observer",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Feishu (Lark) observer plugin for looonger tasks — streaming status card + human input, no message content",
+  "license": "MIT",
+  "engines": {
+    "bun": ">=1.2"
+  },
+  "scripts": {
+    "check": "tsc --noEmit && bun test",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@larksuiteoapi/node-sdk": "^1.74.0"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "~5.9.3"
+  }
+}

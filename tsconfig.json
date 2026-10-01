@@ -1,0 +1,19 @@
+{
+  "compilerOptions": {
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "target": "esnext",
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "types": ["bun"],
+    "skipLibCheck": true,
+    "noEmit": true,
+    "paths": {
+      "looonger-sdk": ["../looonger/packages/sdk/src/index.ts"],
+      "looonger-core": ["../looonger/packages/core/src/index.ts"],
+      "@looonger/harness": ["../looonger/packages/harness/src/index.ts"],
+      "@looonger/view": ["../looonger/packages/view/src/index.ts"]
+    }
+  },
+  "include": ["src", "test"]
+}

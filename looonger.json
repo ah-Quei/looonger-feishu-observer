@@ -1,0 +1,6 @@
+{
+  "id": "feishu",
+  "observers": {
+    "feishu": { "module": "./src/observer.ts#feishuObserver" }
+  }
+}

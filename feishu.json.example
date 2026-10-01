@@ -1,0 +1,12 @@
+{
+  "appId": "cli_xxxxxxxxxxxx",
+  "appSecret": "your-app-secret",
+  "chatId": "oc_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+  "allowedSenders": ["ou_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"],
+  "allowedChats": [],
+  "baseUrl": "https://open.feishu.cn",
+  "flushMs": 2000,
+  "queueTail": 3,
+  "showBoard": true,
+  "stopConfirmWindowMs": 60000
+}

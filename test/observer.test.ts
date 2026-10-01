@@ -1,0 +1,219 @@
+/** 观察者生命周期单测：节流 / 白名单 / 两段式停止 / 降级 / dispose 收尾。 */
+import { afterEach, describe, expect, test } from "bun:test";
+import { rmSync } from "node:fs";
+import { createFeishuObserver } from "../src/observer";
+import { createSilentLogger } from "../src/logger";
+import { FakeCardClient, FakeEventSource, FakeHandle, ManualTimers } from "./fakes";
+
+const tmpDirs: string[] = [];
+afterEach(() => {
+  for (const dir of tmpDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+});
+
+const CONFIG = {
+  appId: "cli_test",
+  appSecret: "secret",
+  chatId: "oc_test",
+  allowedSenders: ["ou_owner"],
+  allowedChats: [] as readonly string[],
+  baseUrl: "https://open.feishu.cn",
+  flushMs: 2000,
+  queueTail: 3,
+  showBoard: true,
+  stopConfirmWindowMs: 60_000,
+};
+
+/** 装配 + 等异步初始化（建卡/发卡/长连接都是快 Promise，两个微任务轮次足够）。 */
+async function setup(): Promise<{
+  handle: FakeHandle;
+  cards: FakeCardClient;
+  source: FakeEventSource;
+  timers: ManualTimers;
+  now: () => number;
+}> {
+  const cards = new FakeCardClient();
+  const source = new FakeEventSource();
+  const timers = new ManualTimers();
+  let clock = 1_000_000;
+  const handle = new FakeHandle();
+  const observer = createFeishuObserver({
+    config: CONFIG,
+    logger: createSilentLogger(),
+    cardClient: cards,
+    eventSource: source,
+    timers,
+    now: () => clock,
+  });
+  observer.attach(handle as never);
+  await settle();
+  return { handle, cards, source, timers, now: () => clock };
+}
+
+function settle(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+function msg(overrides: Partial<{ messageId: string; chatId: string; senderOpenId: string; text: string }> = {}) {
+  return {
+    messageId: "m1",
+    chatId: "oc_test",
+    senderOpenId: "ou_owner",
+    text: "",
+    ...overrides,
+  };
+}
+
+describe("飞书观察者生命周期", () => {
+  test("attach：订阅先建 + 建卡发卡 + 长连接启动；首屏即推一次", async () => {
+    const { cards, source } = await setup();
+    expect(source.started).toBe(true);
+    expect(cards.countOp("createCard")).toBe(1);
+    expect(cards.countOp("sendCardToChat")).toBe(1);
+    // 首屏内容在 createCard 的卡片 JSON 里（流式更新接口还没被调用）
+    const cardJson = JSON.parse(cards.calls[0]?.args[0] as string) as {
+      body: { elements: Array<{ content: string }> };
+    };
+    expect(cardJson.body.elements[0]?.content).toContain("测试目标");
+  });
+
+  test("节流：多个事件只在一轮 tick 推一次更新", async () => {
+    const { handle, cards, timers } = await setup();
+    const before = cards.countOp("updateElementText");
+    handle.pushEvent({ type: "run-started", sessionId: "s", role: "solver" } as never);
+    handle.pushEvent({ type: "run-settled", sessionId: "s", role: "solver" } as never);
+    expect(cards.countOp("updateElementText")).toBe(before); // 未 tick 不推
+    timers.tick();
+    expect(cards.countOp("updateElementText")).toBe(before + 1);
+    timers.tick(); // 无脏 → 不推
+    expect(cards.countOp("updateElementText")).toBe(before + 1);
+  });
+
+  test("流式被关（300309）→ 自动重开 + 同文重推，卡片不卡死", async () => {
+    const { handle, cards, timers } = await setup();
+    cards.failNextUpdateWithStreamingClosed = true;
+    handle.pushEvent({ type: "run-started", sessionId: "s", role: "strategist" } as never);
+    timers.tick();
+    await settle();
+    expect(cards.countOp("setStreamingMode")).toBe(1);
+    // 重推成功：一次失败 + 重开后的一次成功
+    const updates = cards.calls.filter((c) => c.op === "updateElementText");
+    expect(updates.length).toBeGreaterThanOrEqual(2);
+  });
+
+  test("白名单：允许的发送者文本 → 人类输入入队 + 回复", async () => {
+    const { handle, source, cards } = await setup();
+    await source.emit(msg({ text: "看看 80 端口" }));
+    expect(handle.humanInputs).toEqual(["看看 80 端口"]);
+    expect(cards.calls.some((c) => c.op === "replyText")).toBe(true);
+  });
+
+  test("白名单外发送者 → 拒绝（fail-closed，不入队）", async () => {
+    const { handle, source, cards } = await setup();
+    await source.emit(msg({ senderOpenId: "ou_stranger", text: "rm -rf /" }));
+    expect(handle.humanInputs).toEqual([]);
+    expect(cards.lastReplyText()).toContain("白名单");
+  });
+
+  test("/stop 两段式：请求 → 窗口内确认才停；无确认不停", async () => {
+    const { handle, source } = await setup();
+    await source.emit(msg({ text: "/stop" }));
+    expect(handle.stopRequests.length).toBe(0); // 只请求，未停
+    await source.emit(msg({ text: "/stop confirm" }));
+    expect(handle.stopRequests.length).toBe(1);
+  });
+
+  test("/stop 过期（窗口外确认）→ 不停", async () => {
+    const cards = new FakeCardClient();
+    const source = new FakeEventSource();
+    const timers = new ManualTimers();
+    let clock = 1_000_000;
+    const handle = new FakeHandle();
+    createFeishuObserver({
+      config: { ...CONFIG, stopConfirmWindowMs: 1000 },
+      logger: createSilentLogger(),
+      cardClient: cards,
+      eventSource: source,
+      timers,
+      now: () => clock,
+    }).attach(handle as never);
+    await settle();
+    await source.emit(msg({ text: "/stop" }));
+    clock += 5000; // 超过确认窗
+    await source.emit(msg({ text: "/stop confirm" }));
+    expect(handle.stopRequests.length).toBe(0);
+  });
+
+  test("/cancel 取消待确认的停止", async () => {
+    const { handle, source } = await setup();
+    await source.emit(msg({ text: "/stop" }));
+    await source.emit(msg({ text: "/cancel" }));
+    await source.emit(msg({ text: "/stop confirm" }));
+    expect(handle.stopRequests.length).toBe(0);
+  });
+
+  test("/status → 强制立即刷新（不等 tick）", async () => {
+    const { source, cards, timers } = await setup();
+    const before = cards.countOp("updateElementText");
+    await source.emit(msg({ text: "/status" }));
+    expect(cards.countOp("updateElementText")).toBe(before + 1);
+    timers.tick(); // 刚刷过 → 无新增
+  });
+
+  test("dispose：清定时器 + 终局刷新 + 关流式 + 关长连接 + 退订", async () => {
+    const { handle, cards, source, timers } = await setup();
+    handle.outcomeValue = { status: "completed", reason: "task_completed" };
+    for (const cleanup of handle.adopted) cleanup.dispose();
+    await settle();
+    expect(timers.activeCount).toBe(0);
+    expect(source.closed).toBe(true);
+    expect(cards.lastCardText()).toContain("任务完成");
+    const lastStreaming = [...cards.calls].reverse().find((c) => c.op === "setStreamingMode");
+    expect(lastStreaming?.args[1]).toBe(false); // streaming off
+    // 退订后事件不再触发更新
+    const before = cards.countOp("updateElementText");
+    handle.pushEvent({ type: "run-started", sessionId: "s", role: "solver" } as never);
+    timers.tick();
+    expect(cards.countOp("updateElementText")).toBe(before);
+  });
+
+  test("降级：建卡失败也照常接指令（卡片没有，命令仍在）", async () => {
+    const cards = new FakeCardClient();
+    cards.createCard = async () => {
+      throw new Error("network down");
+    };
+    const source = new FakeEventSource();
+    const timers = new ManualTimers();
+    const handle = new FakeHandle();
+    createFeishuObserver({
+      config: CONFIG,
+      logger: createSilentLogger(),
+      cardClient: cards,
+      eventSource: source,
+      timers,
+    }).attach(handle as never);
+    await settle();
+    expect(source.started).toBe(true);
+    await source.emit(msg({ text: "人工指令" }));
+    expect(handle.humanInputs).toEqual(["人工指令"]);
+  });
+
+  test("attach 是同步的：订阅在任何 await 之前（run#1 事件不丢）", async () => {
+    const cards = new FakeCardClient();
+    const source = new FakeEventSource();
+    const timers = new ManualTimers();
+    const handle = new FakeHandle();
+    createFeishuObserver({
+      config: CONFIG,
+      logger: createSilentLogger(),
+      cardClient: cards,
+      eventSource: source,
+      timers,
+    }).attach(handle as never);
+    // 不 await：attach 返回后事件已在流里。attach 前窗口里的 task-start-requested 由
+    // seed 消化（快照口径），事件计数从 subscribe 起算——本条 run-started 是第 1 条。
+    handle.pushEvent({ type: "run-started", sessionId: "s", role: "solver" } as never);
+    await settle();
+    timers.tick();
+    expect(cards.lastCardText()).toContain("事件 1");
+  });
+});

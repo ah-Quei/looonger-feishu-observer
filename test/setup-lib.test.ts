@@ -4,6 +4,7 @@ import {
   AUTHORIZE_SCOPES,
   accountsBaseUrl,
   buildAuthorizeUrl,
+  cardSendPath,
   parseCallback,
 } from "../src/setup-lib";
 
@@ -65,5 +66,12 @@ describe("setup-lib", () => {
       state: "st",
       code: "abc",
     });
+  });
+});
+
+describe("cardSendPath（推送目标类型 → receive_id_type）", () => {
+  test("私聊模式必须用 open_id（chat_id 会 230001 invalid receive_id）", () => {
+    expect(cardSendPath("open_id")).toBe("/open-apis/im/v1/messages?receive_id_type=open_id");
+    expect(cardSendPath("chat_id")).toBe("/open-apis/im/v1/messages?receive_id_type=chat_id");
   });
 });

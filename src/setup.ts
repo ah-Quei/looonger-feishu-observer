@@ -19,7 +19,12 @@ import { existsSync } from "node:fs";
 import { readFile, rename, writeFile } from "node:fs/promises";
 import { createInterface } from "node:readline";
 import { dirname, resolve } from "node:path";
-import { AUTHORIZE_SCOPES, buildAuthorizeUrl, parseCallback } from "./setup-lib";
+import {
+  AUTHORIZE_SCOPES,
+  buildAuthorizeUrl,
+  cardSendPath,
+  parseCallback,
+} from "./setup-lib";
 import type { FeishuConfig } from "./config";
 
 const PORT = 8972;
@@ -237,7 +242,7 @@ async function main(): Promise<void> {
   if (openId !== undefined) console.log(`授权者已加入白名单：${openId}`);
 
   // ── 第 5 步：联通性验证 ────────────────────────────────────────────────
-  step(5, 5, "联通性验证（往目标群发一张测试卡片）");
+  step(5, 5, "联通性验证（往推送目标发一张测试卡片）");
   const tenant = await feishuRequest(baseUrl, "POST", "/open-apis/auth/v3/tenant_access_token/internal", {
     body: { app_id: appId, app_secret: appSecret },
   });
@@ -251,7 +256,9 @@ async function main(): Promise<void> {
           tag: "markdown",
           element_id: "test_md",
           content:
-            "**连接成功** ✅\n\n这是 looonger 飞书观察面的测试卡片。\n在任务群里发送 `/help` 查看命令。",
+            receiveIdType === "open_id"
+              ? "**连接成功** ✅\n\n这是 looonger 飞书观察面的测试卡片（私聊推送）。\n私聊我发送 `/help` 查看命令。"
+              : "**连接成功** ✅\n\n这是 looonger 飞书观察面的测试卡片。\n在任务群里发送 `/help` 查看命令。",
         },
       ],
     },
@@ -261,7 +268,7 @@ async function main(): Promise<void> {
     token: tenantToken,
   });
   const cardId = (card.data as { card_id?: string } | undefined)?.card_id ?? "";
-  await feishuRequest(baseUrl, "POST", "/open-apis/im/v1/messages?receive_id_type=chat_id", {
+  await feishuRequest(baseUrl, "POST", cardSendPath(receiveIdType), {
     body: {
       receive_id: chatId,
       msg_type: "interactive",
@@ -269,7 +276,11 @@ async function main(): Promise<void> {
     },
     token: tenantToken,
   });
-  console.log("测试卡片已发送——去飞书群确认是否收到「looonger 联调测试」。");
+  console.log(
+    receiveIdType === "open_id"
+      ? "测试卡片已私信给你——在飞书里打开 bot 的私聊，查看「looonger 联调测试」。"
+      : "测试卡片已发送——去目标群确认是否收到「looonger 联调测试」。",
+  );
   console.log("\n✅ 授权完成。");
   if (receiveIdType === "open_id") {
     console.log("推送目标：私聊（bot 会私信你，不需要任何群）");

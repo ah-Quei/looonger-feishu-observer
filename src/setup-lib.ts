@@ -40,6 +40,11 @@ export function buildAuthorizeUrl(options: AuthorizeUrlOptions): string {
   return url.toString().replace(/\+/g, "%20");
 }
 
+/** 发卡片消息的路径：推送目标类型决定 `receive_id_type`（chat_id=群 / open_id=私聊）。 */
+export function cardSendPath(receiveIdType: "chat_id" | "open_id"): string {
+  return `/open-apis/im/v1/messages?receive_id_type=${receiveIdType}`;
+}
+
 export type CallbackResult =
   | { readonly kind: "code"; readonly state: string; readonly code: string }
   | { readonly kind: "denied"; readonly state: string | undefined }

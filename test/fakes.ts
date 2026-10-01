@@ -4,7 +4,7 @@
 import type { LooongerEvent } from "looonger-sdk";
 import type { BoardSnapshot, LooongerGoal, QueueMessage, QueueSnapshot, QueueView, TaskOutcome } from "looonger-sdk";
 import { FeishuApiError, type FeishuCardClient, type FeishuEventSource, type FeishuIncoming } from "../src/feishu-client";
-import type { FeishuHandleView } from "../src/observer";
+import type { FeishuHandleView } from "../src/frontend";
 
 // ============ FakeCardClient ============
 

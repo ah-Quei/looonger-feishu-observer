@@ -1,4 +1,4 @@
-/** 飞书观察者（TaskObserver 实现）。
+/** 飞书前端面（TaskFrontend 实现）。
  *
  *  契约（`docs/DOMAIN-AUTHORING.md` §7）：
  *  - `attach(handle)` 在 handle 建成、**start 之前**同步调用——订阅必须同步建，事件从第一毫秒不丢；
@@ -13,7 +13,7 @@
  */
 
 import { resolve } from "node:path";
-import type { TaskObserver } from "looonger-sdk";
+import type { TaskFrontend, TaskHandle } from "looonger-sdk";
 import type { StatusSnapshots, StatusState } from "./status-model";
 import { ingestStatus, renderStatusMarkdown, seedStatus } from "./status-model";
 import { parseCommand, FEISHU_HELP_TEXT } from "./commands";
@@ -45,7 +45,7 @@ export interface FeishuHandleView {
   adopt(cleanup: { dispose(): void }): void;
 }
 
-export interface FeishuObserverOptions {
+export interface FeishuFrontendOptions {
   /** 已加载的配置（测试/宿主直传）；与 configPath 二选一。 */
   readonly config?: FeishuConfig;
   /** feishu.json 路径（manifest 装订用；attach 时懒加载，失败 = 降级无卡片）。 */
@@ -57,7 +57,7 @@ export interface FeishuObserverOptions {
   readonly eventSource?: FeishuEventSource;
 }
 
-export function createFeishuObserver(options: FeishuObserverOptions = {}): TaskObserver {
+export function createFeishuFrontend(options: FeishuFrontendOptions = {}): TaskFrontend {
   const logger = options.logger ?? createScopedLogger();
   const now = options.now ?? (() => Date.now());
   const timers = options.timers ?? {
@@ -66,7 +66,7 @@ export function createFeishuObserver(options: FeishuObserverOptions = {}): TaskO
   };
 
   return {
-    attach(handle: TaskObserver extends never ? never : Parameters<TaskObserver["attach"]>[0]): void {
+    attach(handle: TaskHandle): void {
       attachFeishu(handle as unknown as FeishuHandleView, options, logger, now, timers);
     },
   };
@@ -74,7 +74,7 @@ export function createFeishuObserver(options: FeishuObserverOptions = {}): TaskO
 
 function attachFeishu(
   handle: FeishuHandleView,
-  options: FeishuObserverOptions,
+  options: FeishuFrontendOptions,
   logger: FeishuLogger,
   now: () => number,
   timers: { setInterval(handler: () => void, ms: number): unknown; clearInterval(handle: unknown): void },
@@ -285,8 +285,8 @@ function attachFeishu(
   });
 }
 
-/** manifest 装订导出（`looonger.json` 的 observers.feishu.module 指向这里）。
+/** manifest 装订导出（`looonger.json` 的 frontends.feishu.module 指向这里）。
  *  配置懒加载：目录相对本文件（`<repo>/feishu.json`，可用 env FEISHU_APP_ID/SECRET 覆盖密钥）。 */
-export const feishuObserver: TaskObserver = createFeishuObserver({
+export const feishuFrontend: TaskFrontend = createFeishuFrontend({
   configPath: resolve(import.meta.dir, "../feishu.json"),
 });

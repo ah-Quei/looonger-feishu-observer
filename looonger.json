@@ -1,6 +1,8 @@
 {
   "id": "feishu",
-  "observers": {
-    "feishu": { "module": "./src/observer.ts#feishuObserver" }
+  "frontends": {
+    "feishu": {
+      "module": "./src/frontend.ts#feishuFrontend"
+    }
   }
 }

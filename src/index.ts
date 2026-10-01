@@ -25,11 +25,11 @@ export {
 } from "./feishu-client";
 export { createSilentLogger, createScopedLogger, createStderrLogger, debugForced, type FeishuLogger, type LoggerOptions } from "./logger";
 export {
-  createFeishuObserver,
-  feishuObserver,
+  createFeishuFrontend,
+  feishuFrontend,
+  type FeishuFrontendOptions,
   type FeishuHandleView,
-  type FeishuObserverOptions,
-} from "./observer";
+} from "./frontend";
 export {
   ingestStatus,
   renderStatusMarkdown,

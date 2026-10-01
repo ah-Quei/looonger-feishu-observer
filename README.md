@@ -1,6 +1,6 @@
 # looonger-feishu-observer
 
-looonger 的**飞书观察面插件**（独立仓库，第三方消费方）：把任务运行状态推送到飞书群，
+looonger 的**飞书前端面插件**（独立仓库，第三方消费方）：把任务运行状态推送到飞书群，
 并允许在飞书里给任务发**人类输入**。
 
 > **只看运行状态，不看消息内容**：卡片展示三角色接力、队列、目标、占用与结局——
@@ -78,13 +78,13 @@ bun run <looonger>/apps/cli/src/index.ts -d /path/to/looonger-feishu-observer -o
 在 looonger 的 `looonger.json` 里写 `"domain": "/path/to/looonger-feishu-observer"` 即可常驻，
 不用每次 `-d`（looonger ≥ 配置级 domain 支持；`-d` 显式优先）。
 
-**B. 宿主级 observers（自定义宿主）**：每个任务都挂，TUI 零改动：
+**B. 宿主级 frontends（自定义宿主）**：每个任务都挂，TUI 零改动：
 
 ```ts
 import { createFeishuObserver, loadFeishuConfig } from "looonger-feishu-observer";
 
 const config = await loadFeishuConfig("./feishu.json");
-const client = createLooongerClient({ backend, observers: [createFeishuObserver({ config })] });
+const client = createLooongerClient({ backend, frontends: [createFeishuFrontend({ config })] });
 ```
 
 ### 4. 飞书里怎么用
@@ -122,7 +122,7 @@ BOARD TODO 3/8 · IDEA 2 · MEM 5
 
 ```text
 src/
-  observer.ts       TaskObserver 装配：订阅（同步、回调不 await）+ 节流 flush + 命令路由 + dispose 收尾
+  frontend.ts        TaskFrontend 装配：订阅（同步、回调不 await）+ 节流 flush + 命令路由 + dispose 收尾
   setup.ts          一键授权向导（bun run setup）：本地回调 + OAuth + 自动发现群/白名单 + 写配置 + 测试卡
   setup-lib.ts      向导纯函数件（授权链接/回调解析/scope）
   status-model.ts   纯函数状态机（与 TUI model.ts/sidebar.ts 逐条对齐）+ markdown 渲染——零 IO，可单测

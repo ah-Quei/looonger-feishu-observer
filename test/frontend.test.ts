@@ -1,7 +1,7 @@
 /** 观察者生命周期单测：节流 / 白名单 / 两段式停止 / 降级 / dispose 收尾。 */
 import { afterEach, describe, expect, test } from "bun:test";
 import { rmSync } from "node:fs";
-import { createFeishuObserver } from "../src/observer";
+import { createFeishuFrontend } from "../src/frontend";
 import { createSilentLogger } from "../src/logger";
 import { FakeCardClient, FakeEventSource, FakeHandle, ManualTimers } from "./fakes";
 
@@ -37,7 +37,7 @@ async function setup(): Promise<{
   const timers = new ManualTimers();
   let clock = 1_000_000;
   const handle = new FakeHandle();
-  const observer = createFeishuObserver({
+  const observer = createFeishuFrontend({
     config: CONFIG,
     logger: createSilentLogger(),
     cardClient: cards,
@@ -56,7 +56,7 @@ async function setupDM(): Promise<{ cards: FakeCardClient }> {
   const source = new FakeEventSource();
   const timers = new ManualTimers();
   const handle = new FakeHandle();
-  createFeishuObserver({
+  createFeishuFrontend({
     config: { ...CONFIG, chatId: "ou_owner", receiveIdType: "open_id" },
     logger: createSilentLogger(),
     cardClient: cards,
@@ -81,7 +81,7 @@ function msg(overrides: Partial<{ messageId: string; chatId: string; senderOpenI
   };
 }
 
-describe("飞书观察者生命周期", () => {
+describe("飞书前端面生命周期", () => {
   test("attach：订阅先建 + 建卡发卡 + 长连接启动；首屏即推一次", async () => {
     const { cards, source } = await setup();
     expect(source.started).toBe(true);
@@ -152,7 +152,7 @@ describe("飞书观察者生命周期", () => {
     const timers = new ManualTimers();
     let clock = 1_000_000;
     const handle = new FakeHandle();
-    createFeishuObserver({
+    createFeishuFrontend({
       config: { ...CONFIG, stopConfirmWindowMs: 1000 },
       logger: createSilentLogger(),
       cardClient: cards,
@@ -208,7 +208,7 @@ describe("飞书观察者生命周期", () => {
     const source = new FakeEventSource();
     const timers = new ManualTimers();
     const handle = new FakeHandle();
-    createFeishuObserver({
+    createFeishuFrontend({
       config: CONFIG,
       logger: createSilentLogger(),
       cardClient: cards,
@@ -226,7 +226,7 @@ describe("飞书观察者生命周期", () => {
     const source = new FakeEventSource();
     const timers = new ManualTimers();
     const handle = new FakeHandle();
-    createFeishuObserver({
+    createFeishuFrontend({
       config: CONFIG,
       logger: createSilentLogger(),
       cardClient: cards,

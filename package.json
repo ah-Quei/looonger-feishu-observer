@@ -11,7 +11,8 @@
   "scripts": {
     "check": "tsc --noEmit && bun test",
     "typecheck": "tsc --noEmit",
-    "test": "bun test"
+    "test": "bun test",
+    "setup": "bun run src/setup.ts"
   },
   "dependencies": {
     "@larksuiteoapi/node-sdk": "^1.74.0"

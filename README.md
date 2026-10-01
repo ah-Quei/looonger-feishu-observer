@@ -141,6 +141,11 @@ src/
    （`message-delta` 只取 `parseMessageDelta().kind` 做活动分类）；
 4. **降级不冒泡**：建卡失败 → 只有命令回复；更新失败 → 保持脏标记下轮重试；流式被关
    （`200850/300309`）→ 自动重开后同文重推。
+5. **日志不闯屏**（与 looonger 库层同口径）：插件默认经 `@looonger/harness` 的 raw-output
+   接管作用域写日志——真实宿主里全部收编进任务诊断日志 `<dataDir>/<taskId>.log.jsonl`，
+   **永不上屏**；飞书 SDK 自带的 console logger（`[info]: …` 那一位）也被换成静默
+   info/debug/trace + warn/error 收编。本地排障想强制上屏：`FEISHU_DEBUG=1`。
+   排障入口：`grep feishu <dataDir>/<taskId>.log.jsonl`。
 
 ## 已知限制（如实声明）
 

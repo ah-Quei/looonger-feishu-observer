@@ -16,13 +16,14 @@ export {
 export {
   createLarkCardClient,
   createLarkEventSource,
+  createLarkLogger,
   FeishuApiError,
   isStreamingClosedError,
   type FeishuCardClient,
   type FeishuEventSource,
   type FeishuIncoming,
 } from "./feishu-client";
-export { createSilentLogger, createStderrLogger, type FeishuLogger } from "./logger";
+export { createSilentLogger, createScopedLogger, createStderrLogger, debugForced, type FeishuLogger, type LoggerOptions } from "./logger";
 export {
   createFeishuObserver,
   feishuObserver,

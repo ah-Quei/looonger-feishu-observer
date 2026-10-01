@@ -27,7 +27,7 @@ import {
   type FeishuIncoming,
   isStreamingClosedError,
 } from "./feishu-client";
-import { createStderrLogger, type FeishuLogger } from "./logger";
+import { createScopedLogger, type FeishuLogger } from "./logger";
 
 /** 观察者实际用到的 handle 面（TaskHandle 的结构子集——测试用替身即可装配）。 */
 export interface FeishuHandleView {
@@ -58,7 +58,7 @@ export interface FeishuObserverOptions {
 }
 
 export function createFeishuObserver(options: FeishuObserverOptions = {}): TaskObserver {
-  const logger = options.logger ?? createStderrLogger();
+  const logger = options.logger ?? createScopedLogger();
   const now = options.now ?? (() => Date.now());
   const timers = options.timers ?? {
     setInterval: (handler, ms) => setInterval(handler, ms),
@@ -238,7 +238,7 @@ function attachFeishu(
         config = await loadFeishuConfig(options.configPath);
       }
       if (cardClient === undefined) cardClient = createLarkCardClient(config, logger);
-      if (eventSource === undefined) eventSource = createLarkEventSource(config);
+      if (eventSource === undefined) eventSource = createLarkEventSource(config, logger);
       await eventSource.start(onIncoming);
     } catch (err) {
       logger.error("飞书观察者初始化失败（降级：无卡片、无指令）", { error: String(err) });

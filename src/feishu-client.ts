@@ -13,9 +13,28 @@
  */
 
 import { randomUUID } from "node:crypto";
+import type { Logger as LarkLogger } from "@larksuiteoapi/node-sdk";
 import { EventDispatcher, WSClient } from "@larksuiteoapi/node-sdk";
 import type { FeishuConfig } from "./config";
 import type { FeishuLogger } from "./logger";
+
+/** 把飞书 SDK 自带的 console logger（`[info]: …` / `[ws] … Configured in:` 那位的源头）
+ *  换成静默 info/debug/trace、warn/error 收编进插件 logger——SDK 噪音永不上屏。 */
+export function createLarkLogger(logger: FeishuLogger): LarkLogger {
+  const text = (...msg: unknown[]): string =>
+    msg.map((m) => (typeof m === "string" ? m : JSON.stringify(m))).join(" ");
+  return {
+    error: (...msg: unknown[]) => {
+      logger.error(`lark ${text(...msg)}`);
+    },
+    warn: (...msg: unknown[]) => {
+      logger.warn(`lark ${text(...msg)}`);
+    },
+    info: () => {},
+    debug: () => {},
+    trace: () => {},
+  };
+}
 
 /** 飞书 API 业务错误（HTTP 200 但 code !== 0）。 */
 export class FeishuApiError extends Error {
@@ -182,11 +201,18 @@ export function createLarkCardClient(
 }
 
 /** WS 长连接事件源（免公网回调地址）。群消息默认只在 @机器人 时推送（应用权限口径）。 */
-export function createLarkEventSource(config: FeishuConfig): FeishuEventSource {
-  const ws = new WSClient({ appId: config.appId, appSecret: config.appSecret });
+export function createLarkEventSource(config: FeishuConfig, logger?: FeishuLogger): FeishuEventSource {
+  const larkLogger = logger === undefined ? undefined : createLarkLogger(logger);
+  const ws = new WSClient({
+    appId: config.appId,
+    appSecret: config.appSecret,
+    ...(larkLogger === undefined ? {} : { logger: larkLogger }),
+  });
   let onIncoming: ((msg: FeishuIncoming) => void | Promise<void>) | undefined;
 
-  const dispatcher = new EventDispatcher({}).register({
+  const dispatcher = new EventDispatcher({
+    ...(larkLogger === undefined ? {} : { logger: larkLogger }),
+  }).register({
     "im.message.receive_v1": async (data) => {
       const handler = onIncoming;
       if (handler === undefined) return;

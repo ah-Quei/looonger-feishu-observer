@@ -25,8 +25,12 @@ export class FakeCardClient implements FeishuCardClient {
     return `card-${this.cardIdCounter}`;
   }
 
-  async sendCardToChat(chatId: string, cardId: string): Promise<string> {
-    this.calls.push({ op: "sendCardToChat", args: [chatId, cardId] });
+  async sendCardToChat(
+    target: string,
+    cardId: string,
+    receiveIdType: "chat_id" | "open_id" = "chat_id",
+  ): Promise<string> {
+    this.calls.push({ op: "sendCardToChat", args: [target, cardId, receiveIdType] });
     return `msg-${cardId}`;
   }
 

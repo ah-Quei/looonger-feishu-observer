@@ -31,6 +31,7 @@ describe("loadFeishuConfig", () => {
       chatId: "oc_test",
       allowedSenders: ["ou_a"],
       allowedChats: [],
+      receiveIdType: "chat_id",
       baseUrl: "https://open.feishu.cn",
       flushMs: 2000,
       queueTail: 3,
@@ -65,6 +66,18 @@ describe("loadFeishuConfig", () => {
   test("allowedSenders 为空 = fail-closed（可加载，指令全拒）", async () => {
     const config = await loadFeishuConfig(writeConfig({ ...BASE, allowedSenders: [] }), {});
     expect(config.allowedSenders).toEqual([]);
+  });
+
+  test("receiveIdType：缺省 chat_id；私聊模式填 open_id（卡片只发本人）", async () => {
+    expect((await loadFeishuConfig(writeConfig(BASE), {})).receiveIdType).toBe("chat_id");
+    const dm = await loadFeishuConfig(
+      writeConfig({ ...BASE, chatId: "ou_me", receiveIdType: "open_id" }),
+      {},
+    );
+    expect(dm.receiveIdType).toBe("open_id");
+    await expect(
+      loadFeishuConfig(writeConfig({ ...BASE, receiveIdType: "email" }), {}),
+    ).rejects.toThrow(/receiveIdType/);
   });
 
   test("文件不存在 → 抛错（路径错要早炸）", async () => {

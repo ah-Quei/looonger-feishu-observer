@@ -147,7 +147,7 @@ async function main(): Promise<void> {
   const code = callback.code;
 
   // ── 第 3 步：授权码 → 身份 / 群 / 拉群 ─────────────────────────────────
-  step(3, 5, "自动补齐配置（身份 / 群 / 拉机器人进群）");
+  step(3, 5, "自动补齐配置（身份 / 推送目标）");
   const tokenRes = await feishuRequest(baseUrl, "POST", "/open-apis/authen/v2/oauth/token", {
     body: {
       grant_type: "authorization_code",
@@ -170,44 +170,54 @@ async function main(): Promise<void> {
     console.log(`⚠️  读取授权者身份失败（${String(err)}）——allowedSenders 需手工填。`);
   }
 
-  // 3b. 授权者所在的群 → chatId（不含单聊；单聊目标见 README 手工方式）
-  const chatsRes = await feishuRequest(baseUrl, "GET", "/open-apis/im/v1/chats?page_size=100", {
-    token: userToken,
-  });
-  const chats = ((chatsRes.data as { items?: Array<{ chat_id: string; name?: string }> } | undefined)
-    ?.items ?? []) as Array<{ chat_id: string; name?: string }>;
-
+  // 3b. 推送目标：私聊（零群）或群（飞书的群列表接口不含单聊——私聊走 open_id 直发）
+  const mode = await ask("状态卡推送目标：1=私聊（只发给你自己，不需要群）· 2=群", "1");
   let chatId = existing?.chatId ?? "";
-  if (chats.length === 0) {
-    console.log("⚠️  没拉到任何群（可能没开 im:chat:readonly 或你不在任何群里）。");
-    chatId = await ask("手工粘贴目标 chat_id（oc_ 开头）", chatId);
-  } else if (chats.length === 1) {
-    const only = chats[0];
-    if (only !== undefined) {
-      chatId = only.chat_id;
-      console.log(`你只有一个群，已自动选中：${nameOf(only)}`);
-    }
+  let receiveIdType: "chat_id" | "open_id" = "chat_id";
+  if (mode === "1") {
+    if (openId === undefined) fail("私聊模式需要拿到你的 open_id（授权身份读取失败）——重跑或改用群模式");
+    chatId = openId;
+    receiveIdType = "open_id";
+    console.log(`已选私聊：状态卡只发给 ${openId}（你本人）`);
   } else {
-    console.log("选择要推送状态卡的群：");
-    chats.forEach((chat, index) => console.log(`  ${index + 1}) ${nameOf(chat)}`));
-    const pick = await ask("输入编号", "1");
-    const chosen = chats[Number(pick) - 1];
-    if (chosen === undefined) fail("无效的编号");
-    chatId = chosen.chat_id;
-  }
-  if (chatId.length === 0) fail("没有目标 chat_id");
+    const chatsRes = await feishuRequest(baseUrl, "GET", "/open-apis/im/v1/chats?page_size=100", {
+      token: userToken,
+    });
+    const chats = ((chatsRes.data as { items?: Array<{ chat_id: string; name?: string }> } | undefined)
+      ?.items ?? []) as Array<{ chat_id: string; name?: string }>;
 
-  // 3c. 把机器人拉进选中的群（无权限/失败 → 提示手工，不阻断）
-  try {
-    await feishuRequest(
-      baseUrl,
-      "POST",
-      `/open-apis/im/v1/chats/${encodeURIComponent(chatId)}/members?member_id_type=app_id`,
-      { body: { id_list: [appId] }, token: userToken },
-    );
-    console.log("机器人已拉进目标群 ✓");
-  } catch (err) {
-    console.log(`⚠️  自动拉群失败（${String(err)}）——请手动把机器人拉进该群。`);
+    if (chats.length === 0) {
+      console.log("⚠️  没拉到任何群（可能没开 im:chat:readonly 或你不在任何群里）。");
+      chatId = await ask("手工粘贴目标 chat_id（oc_ 开头）", chatId);
+    } else if (chats.length === 1) {
+      const only = chats[0];
+      if (only !== undefined) {
+        chatId = only.chat_id;
+        console.log(`你只有一个群，已自动选中：${nameOf(only)}`);
+      }
+    } else {
+      console.log("选择要推送状态卡的群：");
+      chats.forEach((chat, index) => console.log(`  ${index + 1}) ${nameOf(chat)}`));
+      const pick = await ask("输入编号", "1");
+      const chosen = chats[Number(pick) - 1];
+      if (chosen === undefined) fail("无效的编号");
+      chatId = chosen.chat_id;
+    }
+    if (chatId.length === 0) fail("没有目标 chat_id");
+    receiveIdType = "chat_id";
+
+    // 3c. 把机器人拉进选中的群（无权限/失败 → 提示手工，不阻断）
+    try {
+      await feishuRequest(
+        baseUrl,
+        "POST",
+        `/open-apis/im/v1/chats/${encodeURIComponent(chatId)}/members?member_id_type=app_id`,
+        { body: { id_list: [appId] }, token: userToken },
+      );
+      console.log("机器人已拉进目标群 ✓");
+    } catch (err) {
+      console.log(`⚠️  自动拉群失败（${String(err)}）——请手动把机器人拉进该群。`);
+    }
   }
 
   // ── 第 4 步：写 feishu.json ────────────────────────────────────────────
@@ -217,6 +227,7 @@ async function main(): Promise<void> {
     appId,
     appSecret,
     chatId,
+    receiveIdType,
     allowedSenders: openId === undefined ? (existing?.allowedSenders ?? []) : [openId],
     baseUrl,
   } as FeishuConfig;
@@ -259,7 +270,11 @@ async function main(): Promise<void> {
     token: tenantToken,
   });
   console.log("测试卡片已发送——去飞书群确认是否收到「looonger 联调测试」。");
-  console.log("\n✅ 授权完成。启动方式：");
+  console.log("\n✅ 授权完成。");
+  if (receiveIdType === "open_id") {
+    console.log("推送目标：私聊（bot 会私信你，不需要任何群）");
+  }
+  console.log("启动方式：");
   console.log("   bun run <looonger>/apps/cli/src/index.ts -d " + dirname(CONFIG_FILE) + ' -o "<目标>" -c <目录>');
   console.log("   （或在 looonger 的 looonger.json 里配 \"domain\" 指向本目录，免每次 -d）");
   rl.close();

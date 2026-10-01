@@ -14,6 +14,7 @@ const CONFIG = {
   appId: "cli_test",
   appSecret: "secret",
   chatId: "oc_test",
+  receiveIdType: "chat_id" as "chat_id" | "open_id",
   allowedSenders: ["ou_owner"],
   allowedChats: [] as readonly string[],
   baseUrl: "https://open.feishu.cn",
@@ -49,6 +50,23 @@ async function setup(): Promise<{
   return { handle, cards, source, timers, now: () => clock };
 }
 
+/** 私聊模式装配（receiveIdType=open_id，目标 = 授权者本人）。 */
+async function setupDM(): Promise<{ cards: FakeCardClient }> {
+  const cards = new FakeCardClient();
+  const source = new FakeEventSource();
+  const timers = new ManualTimers();
+  const handle = new FakeHandle();
+  createFeishuObserver({
+    config: { ...CONFIG, chatId: "ou_owner", receiveIdType: "open_id" },
+    logger: createSilentLogger(),
+    cardClient: cards,
+    eventSource: source,
+    timers,
+  }).attach(handle as never);
+  await settle();
+  return { cards };
+}
+
 function settle(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 0));
 }
@@ -69,6 +87,12 @@ describe("飞书观察者生命周期", () => {
     expect(source.started).toBe(true);
     expect(cards.countOp("createCard")).toBe(1);
     expect(cards.countOp("sendCardToChat")).toBe(1);
+    // 群模式（默认）：receive_id_type=chat_id
+    expect(cards.calls[1]?.args[2]).toBe("chat_id");
+    // 私聊模式：open_id 直发（不需要任何群）
+    const dm = await setupDM();
+    expect(dm.cards.calls[1]?.args[2]).toBe("open_id");
+    expect(dm.cards.calls[1]?.args[0]).toBe("ou_owner");
     // 首屏内容在 createCard 的卡片 JSON 里（流式更新接口还没被调用）
     const cardJson = JSON.parse(cards.calls[0]?.args[0] as string) as {
       body: { elements: Array<{ content: string }> };

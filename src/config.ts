@@ -11,8 +11,10 @@ export interface FeishuConfig {
   readonly appId: string;
   /** 飞书自建应用 App Secret。 */
   readonly appSecret: string;
-  /** 状态卡片推送目标（群 chat_id 或用户 open_id——receive_id_type 固定 chat_id）。 */
+  /** 状态卡片推送目标（群 chat_id `oc_` 开头；或私聊时填授权者的 open_id `ou_` 开头）。 */
   readonly chatId: string;
+  /** `chatId` 的 ID 类型：`chat_id` = 群（默认）；`open_id` = 私聊（卡片只发给授权者本人，不需要任何群）。 */
+  readonly receiveIdType: "chat_id" | "open_id";
   /** 可发「人类输入 / 命令」的发送者 open_id 白名单。
    *  **空数组 = 拒绝一切指令**（fail-closed：人类输入会 steer 真 agent，不是演示功能）。 */
   readonly allowedSenders: readonly string[];
@@ -103,6 +105,17 @@ export async function loadFeishuConfig(
         ? FEISHU_CONFIG_DEFAULTS.allowedChats
         : assertStringArray(parsed.allowedChats, "allowedChats", file),
     baseUrl,
+    receiveIdType:
+      parsed.receiveIdType === undefined
+        ? "chat_id"
+        : (() => {
+            if (parsed.receiveIdType !== "chat_id" && parsed.receiveIdType !== "open_id") {
+              throw new Error(
+                `[feishu] 配置文件 ${file} receiveIdType 应为 chat_id|open_id`,
+              );
+            }
+            return parsed.receiveIdType;
+          })(),
     flushMs:
       parsed.flushMs === undefined
         ? FEISHU_CONFIG_DEFAULTS.flushMs

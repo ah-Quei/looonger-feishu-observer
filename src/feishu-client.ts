@@ -36,8 +36,13 @@ export function isStreamingClosedError(error: unknown): boolean {
 export interface FeishuCardClient {
   /** 创建卡片实体 → card_id（一个实体只能发送一次）。 */
   createCard(cardJson: string): Promise<string>;
-  /** 把卡片实体发到 chat → message_id。 */
-  sendCardToChat(chatId: string, cardId: string): Promise<string>;
+  /** 把卡片实体发到目标 → message_id。
+   *  `receiveIdType`：`chat_id`（群，默认）或 `open_id`（私聊： bot 直接发给某个人，不需要群）。 */
+  sendCardToChat(
+    target: string,
+    cardId: string,
+    receiveIdType?: "chat_id" | "open_id",
+  ): Promise<string>;
   /** 流式更新 markdown 元素（全量文本；sequence 须严格递增）。 */
   updateElementText(
     cardId: string,
@@ -138,12 +143,16 @@ export function createLarkCardClient(
       return cardId;
     },
 
-    async sendCardToChat(chatId: string, cardId: string): Promise<string> {
-      const res = (await authed("POST", "/open-apis/im/v1/messages?receive_id_type=chat_id", {
-        receive_id: chatId,
-        msg_type: "interactive",
-        content: JSON.stringify({ type: "card", data: { card_id: cardId } }),
-      })) as { data?: { message_id?: string } };
+    async sendCardToChat(target, cardId, receiveIdType = "chat_id"): Promise<string> {
+      const res = (await authed(
+        "POST",
+        `/open-apis/im/v1/messages?receive_id_type=${receiveIdType}`,
+        {
+          receive_id: target,
+          msg_type: "interactive",
+          content: JSON.stringify({ type: "card", data: { card_id: cardId } }),
+        },
+      )) as { data?: { message_id?: string } };
       return res.data?.message_id ?? "";
     },
 

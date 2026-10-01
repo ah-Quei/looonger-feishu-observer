@@ -34,7 +34,7 @@ bun run setup
 | --- | --- | --- |
 | 1/5 创建应用 | 建自建应用 / 加机器人 / 开 4 个权限 / 长连接事件 / 登记重定向 URL / **发布版本** | 人工（脚本自动打开后台 + 逐项清单） |
 | 2/5 浏览器授权 | 起本地回调服务 + 自动打开授权链接 | 人工只在网页点「授权」 |
-| 3/5 补齐配置 | 授权码 → user_access_token → **你的 open_id 自动进白名单** → 拉你所在的群选一个（chatId）→ **自动拉机器人进群** | 全自动 |
+| 3/5 补齐配置 | 授权码 → user_access_token → **你的 open_id 自动进白名单** → 选推送目标：**私聊（只发给你自己，零群）或群**（群模式才拉群） | 全自动 |
 | 4/5 写配置 | 写 `feishu.json`（600 权限，旧文件备份 `.bak`） | 全自动 |
 | 5/5 联通性验证 | 往目标群发一张测试卡片 | 全自动 |
 
@@ -57,7 +57,8 @@ cp feishu.json.example feishu.json   # feishu.json 已在 .gitignore，不会提
 | 字段 | 必填 | 默认 | 说明 |
 | --- | --- | --- | --- |
 | `appId` / `appSecret` | ✅（可被 env 覆盖） | — | 应用凭据；密钥也可放 `FEISHU_APP_ID` / `FEISHU_APP_SECRET` 环境变量 |
-| `chatId` | ✅ | — | 状态卡片推送目标（群 `oc_` 或用户会话） |
+| `chatId` | ✅ | — | 状态卡片推送目标：群 `chat_id`（`oc_` 开头），或私聊模式填授权者 open_id（见下） |
+| `receiveIdType` | — | `chat_id` | `chat_id` = 群；`open_id` = **私聊**（卡片只发给授权者本人，不需要任何群） |
 | `allowedSenders` | — | `[]` | 可发人类输入/命令的 open_id 白名单；**空 = 全拒**（只推卡片） |
 | `allowedChats` | — | `[]` | chat 白名单（空 = 只认发送者白名单） |
 | `baseUrl` | — | `https://open.feishu.cn` | Lark 国际版改 `https://open.larksuite.com` |

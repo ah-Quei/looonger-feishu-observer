@@ -248,7 +248,7 @@ function attachFeishu(
       const initial = renderStatusMarkdown(state, snapshots(), renderOptions(), now());
       const title = state.objective.length > 0 ? state.objective : `任务 ${handle.taskId}`;
       cardId = await cardClient.createCard(cardJsonString(buildStatusCard(title, initial)));
-      await cardClient.sendCardToChat(config.chatId, cardId);
+      await cardClient.sendCardToChat(config.chatId, cardId, config.receiveIdType);
       logger.info("状态卡片已推送", { taskId: handle.taskId, cardId });
     } catch (err) {
       cardId = undefined;

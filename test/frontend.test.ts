@@ -2,6 +2,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { rmSync } from "node:fs";
 import { createFeishuFrontend } from "../src/frontend";
+import type { CardOp } from "../src/feishu-client";
 import { createSilentLogger } from "../src/logger";
 import { FakeCardClient, FakeEventSource, FakeHandle, ManualTimers } from "./fakes";
 
@@ -69,6 +70,13 @@ async function setupDM(): Promise<{ cards: FakeCardClient }> {
 
 function settle(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+/** 所有 updateElementText 用过的 sequence（按顺序）——「不跳号」断言的事实基础。 */
+function cardSequences(cards: FakeCardClient): number[] {
+  return cards.calls
+    .filter((c) => c.op === "updateElementText")
+    .map((c) => (c.args[3] as CardOp).sequence);
 }
 
 function msg(overrides: Partial<{ messageId: string; chatId: string; senderOpenId: string; text: string }> = {}) {
@@ -162,6 +170,39 @@ describe("飞书前端面生命周期", () => {
       .filter((c) => c.op === "updateElementText")
       .map((c) => c.args[1]);
     expect(retried).toEqual(["status_context"]);
+  });
+
+  test("sequence 协议：瞬时失败不跳号——重推沿用同一个 sequence", async () => {
+    const { handle, cards, timers } = await setup();
+    cards.failNextUpdateWithNetworkError = true;
+    handle.pushEvent({ type: "run-started", sessionId: "s", role: "solver" } as never);
+    timers.tick(); // PUT(1) 网络错——号不前进（平台也没记）
+    await settle();
+    timers.tick(); // 下一轮：同一个号重推
+    await settle();
+    expect(cardSequences(cards)).toEqual([1, 1]); // 原地重试，绝不跳号
+    expect(cards.lastCardTextFor("status_scene")).toContain("SOLVER · working");
+    // 之后再变脏，接着用 2（连续）
+    handle.pushEvent({ type: "turn-started", sessionId: "s", role: "solver", turnIndex: 9 } as never);
+    timers.tick();
+    await settle();
+    expect(cardSequences(cards)).toEqual([1, 1, 2]);
+  });
+
+  test("sequence 协议：300317 自愈——平台账本领先时自动让号追赶，不永久卡死", async () => {
+    const { handle, cards, timers } = await setup();
+    cards.advancePlatformSequenceTo(5); // 上次失败但平台已静默落账到 5（响应丢失）
+    handle.pushEvent({ type: "run-started", sessionId: "s", role: "solver" } as never);
+    timers.tick();
+    await settle();
+    // 1→300317 让号→2→…→6 对齐成功（一步步追，全程不跳号）
+    expect(cardSequences(cards)).toEqual([1, 2, 3, 4, 5, 6]);
+    expect(cards.lastCardTextFor("status_scene")).toContain("SOLVER · working");
+    // 对齐后恢复连续
+    handle.pushEvent({ type: "turn-started", sessionId: "s", role: "solver", turnIndex: 4 } as never);
+    timers.tick();
+    await settle();
+    expect(cardSequences(cards)).toEqual([1, 2, 3, 4, 5, 6, 7]);
   });
 
   test("流式被关（300309）→ 自动重开 + 同文重推，卡片不卡死", async () => {

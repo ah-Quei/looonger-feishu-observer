@@ -12,7 +12,6 @@
  *  - 回复消息:         POST /open-apis/im/v1/messages/:message_id/reply
  */
 
-import { randomUUID } from "node:crypto";
 import type { Logger as LarkLogger } from "@larksuiteoapi/node-sdk";
 import { EventDispatcher, WSClient } from "@larksuiteoapi/node-sdk";
 import type { FeishuConfig } from "./config";
@@ -52,6 +51,13 @@ export function isStreamingClosedError(error: unknown): boolean {
   return error instanceof FeishuApiError && (error.code === 200850 || error.code === 300309);
 }
 
+/** sequence 跳号/回退（300317）：平台已收过这个号——把号让给平台，下一个号重试即可自愈。
+ *  根因背景：飞书要求同一张卡片的操作 sequence **连续递增**；「失败后也 +1」会跳号，
+ *  跳一次就永久对不上（平台账本永远更大）。协议的完整定义在 frontend 的 `cardOp`。 */
+export function isSequenceCompareFailedError(error: unknown): boolean {
+  return error instanceof FeishuApiError && error.code === 300317;
+}
+
 export interface FeishuCardClient {
   /** 创建卡片实体 → card_id（一个实体只能发送一次）。 */
   createCard(cardJson: string): Promise<string>;
@@ -62,17 +68,25 @@ export interface FeishuCardClient {
     cardId: string,
     receiveIdType?: "chat_id" | "open_id",
   ): Promise<string>;
-  /** 流式更新 markdown 元素（全量文本；sequence 须严格递增）。 */
+  /** 流式更新 markdown 元素（全量文本；sequence/uuid 的协议见 CardOp 与 frontend 的 cardOp）。 */
   updateElementText(
     cardId: string,
     elementId: string,
     content: string,
-    sequence: number,
+    op: CardOp,
   ): Promise<void>;
   /** 开/关流式模式（收尾必须关：开启时不能转发、不能处理卡片回调）。 */
-  setStreamingMode(cardId: string, enabled: boolean, sequence: number): Promise<void>;
+  setStreamingMode(cardId: string, enabled: boolean, op: CardOp): Promise<void>;
   /** 回复某条消息（命令确认用）。 */
   replyText(messageId: string, text: string): Promise<void>;
+}
+
+/** 一次卡片操作的身份：
+ *  - `sequence`：同一张卡片的所有操作必须连续递增（官方 300317 的语义）；
+ *  - `uuid`：幂等去重——重试/网络层重发时平台凭它把重复请求认成同一次操作。 */
+export interface CardOp {
+  readonly sequence: number;
+  readonly uuid: string;
 }
 
 export interface FeishuIncoming {
@@ -91,7 +105,9 @@ export interface FeishuEventSource {
 
 export function createLarkCardClient(
   config: FeishuConfig,
-  logger: FeishuLogger,
+  /** 收着不用：与 `createLarkEventSource(config, logger)` 的签名对齐（调用点统一传），
+   *  传输层的失败由 frontend 的 flush 带上下文记录（element/error），这里不重复记。 */
+  _logger: FeishuLogger,
 ): FeishuCardClient {
   let token: { value: string; expiresAtMs: number } | undefined;
 
@@ -175,23 +191,24 @@ export function createLarkCardClient(
       return res.data?.message_id ?? "";
     },
 
-    async updateElementText(cardId, elementId, content, sequence): Promise<void> {
+    async updateElementText(cardId, elementId, content, op): Promise<void> {
       await authed(
         "PUT",
         `/open-apis/cardkit/v1/cards/${encodeURIComponent(cardId)}/elements/${encodeURIComponent(elementId)}/content`,
-        { uuid: randomUUID(), content, sequence },
+        { uuid: op.uuid, content, sequence: op.sequence },
       );
     },
 
-    async setStreamingMode(cardId, enabled, sequence): Promise<void> {
+    async setStreamingMode(cardId, enabled, op): Promise<void> {
       await authed(
         "PATCH",
         `/open-apis/cardkit/v1/cards/${encodeURIComponent(cardId)}/settings`,
         {
-        uuid: randomUUID(),
-        sequence,
-        settings: JSON.stringify({ config: { streaming_mode: enabled } }),
-      });
+          uuid: op.uuid,
+          sequence: op.sequence,
+          settings: JSON.stringify({ config: { streaming_mode: enabled } }),
+        },
+      );
     },
 
     async replyText(messageId, text): Promise<void> {

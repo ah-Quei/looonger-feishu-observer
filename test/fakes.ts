@@ -3,7 +3,7 @@
 
 import type { LooongerEvent } from "looonger-sdk";
 import type { BoardSnapshot, LooongerGoal, QueueMessage, QueueSnapshot, QueueView, TaskOutcome } from "looonger-sdk";
-import { FeishuApiError, type FeishuCardClient, type FeishuEventSource, type FeishuIncoming } from "../src/feishu-client";
+import { FeishuApiError, type CardOp, type FeishuCardClient, type FeishuEventSource, type FeishuIncoming } from "../src/feishu-client";
 import type { FeishuHandleView, TimerHandle } from "../src/frontend";
 
 // ============ FakeCardClient ============
@@ -18,8 +18,14 @@ export class FakeCardClient implements FeishuCardClient {
   cardIdCounter = 0;
   /** 下一次 updateElementText 抛一次「流式已关」（验证重开+重试恢复）。 */
   failNextUpdateWithStreamingClosed = false;
+  /** 下一次 updateElementText 抛一次瞬时网络错（验证失败不跳号）。 */
+  failNextUpdateWithNetworkError = false;
   /** 指定 element_id 的 updateElementText 持续失败（验证单段失败不拖累其他段）。 */
   failElement: string | undefined;
+  /** 平台侧 sequence 账本（按飞书真实语义建模）：**只有成功的操作记账**，且下一次
+   *  sequence 必须恰好是 last+1（连续递增），否则 300317。旧实现「失败也 +1」
+   *  在这本账前会永久 300317——用户实际踩到的坑，这个假替身就是Regression 防线。 */
+  platformSequence = 0;
 
   async createCard(cardJson: string): Promise<string> {
     this.calls.push({ op: "createCard", args: [cardJson] });
@@ -40,20 +46,43 @@ export class FakeCardClient implements FeishuCardClient {
     cardId: string,
     elementId: string,
     content: string,
-    sequence: number,
+    op: CardOp,
   ): Promise<void> {
-    this.calls.push({ op: "updateElementText", args: [cardId, elementId, content, sequence] });
+    this.calls.push({ op: "updateElementText", args: [cardId, elementId, content, op] });
+    this.checkSequence(op);
     if (this.failNextUpdateWithStreamingClosed) {
       this.failNextUpdateWithStreamingClosed = false;
-      throw new FeishuApiError(300309, "Card streaming closed");
+      throw new FeishuApiError(300309, "Card streaming closed"); // 失败不记账（平台没收）
+    }
+    if (this.failNextUpdateWithNetworkError) {
+      this.failNextUpdateWithNetworkError = false;
+      throw new Error("network down"); // 失败不记账
     }
     if (this.failElement !== undefined && elementId === this.failElement) {
-      throw new FeishuApiError(200860, "Card content exceeds limit");
+      throw new FeishuApiError(200860, "Card content exceeds limit"); // 失败不记账
+    }
+    this.platformSequence = op.sequence; // 成功才记账
+  }
+
+  async setStreamingMode(cardId: string, enabled: boolean, op: CardOp): Promise<void> {
+    this.calls.push({ op: "setStreamingMode", args: [cardId, enabled, op] });
+    this.checkSequence(op);
+    this.platformSequence = op.sequence;
+  }
+
+  /** 平台账本校验：sequence 必须恰好 +1（连续递增），否则 300317。 */
+  private checkSequence(op: CardOp): void {
+    if (op.sequence !== this.platformSequence + 1) {
+      throw new FeishuApiError(
+        300317,
+        `sequence number compare failed (sent ${op.sequence}, expected ${this.platformSequence + 1})`,
+      );
     }
   }
 
-  async setStreamingMode(cardId: string, enabled: boolean, sequence: number): Promise<void> {
-    this.calls.push({ op: "setStreamingMode", args: [cardId, enabled, sequence] });
+  /** 把平台账本顶到 n（模拟上次尝试已落账但我们没收到确认——300317 自愈的测试入口）。 */
+  advancePlatformSequenceTo(n: number): void {
+    this.platformSequence = Math.max(this.platformSequence, n);
   }
 
   async replyText(messageId: string, text: string): Promise<void> {

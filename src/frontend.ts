@@ -15,9 +15,10 @@
  *  其他段照常更新——某一段的问题不会再让整块卡片消失。
  */
 
+import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import type { TaskFrontend, TaskHandle } from "looonger-sdk";
-import type { StatusSnapshots, StatusState } from "./status-model";
+import type { StatusSection, StatusSnapshots, StatusState } from "./status-model";
 import { ingestStatus, renderStatusSections, seedStatus } from "./status-model";
 import { parseCommand, FEISHU_HELP_TEXT } from "./commands";
 import { buildStatusCard, cardJsonString } from "./card";
@@ -25,10 +26,12 @@ import { loadFeishuConfig, type FeishuConfig } from "./config";
 import {
   createLarkCardClient,
   createLarkEventSource,
+  isSequenceCompareFailedError,
+  isStreamingClosedError,
+  type CardOp,
   type FeishuCardClient,
   type FeishuEventSource,
   type FeishuIncoming,
-  isStreamingClosedError,
 } from "./feishu-client";
 import { createScopedLogger, type FeishuLogger } from "./logger";
 
@@ -119,6 +122,8 @@ function attachFeishu(
   let cardId: string | undefined;
   let timerHandle: TimerHandle | undefined;
   let sequence = 0;
+  /** 单次 cardOp 里允许的让号轮数（平台账本领先我们时一步步追上；追不上就抛给下轮 flush）。 */
+  const CARD_OP_MAX_ROUNDS = 8;
   let flushing = false;
   let flushAgain = false;
   let pendingStopAt: number | undefined;
@@ -171,6 +176,55 @@ function attachFeishu(
     }
   }
 
+  /** 一次卡片操作（PUT 元素内容 / PATCH 卡片配置）——sequence 协议的唯一定义点：
+   *
+   *  - 成功 → `sequence` 前进到本次使用的号；
+   *  - 300317（平台已收过这个号：上次失败但其实落账了）→ 把号让给平台，下一个号重试；
+   *  - 其他失败（网络 / 300309 流式被关 / 超时）→ **号不前进**，调用方原地重试——
+   *    重试沿用同一个号，绝不跳号。
+   *
+   *  为什么必须这样：飞书要求同一张卡片的操作 sequence **连续递增**（官方 300317 语义）。
+   *  旧实现是「先 +1 再用」：任何一次失败都会让下一次跳过一个号，平台账本从此永远比
+   *  我们大——卡片永久 300317、停止刷新（用户实际踩到的坑：任务安静 10 分钟 → 流式
+   *  自动关 300309 → 旧重开路径连跳两个号 → 永久冻结 + 每 2s 一条 warn）。
+   *  uuid 每次尝试都带：网络层重发时平台凭它把重复请求认成同一次操作。 */
+  async function cardOp<T>(call: (op: CardOp) => Promise<T>): Promise<T> {
+    for (let round = 0; round < CARD_OP_MAX_ROUNDS; round += 1) {
+      const op: CardOp = { sequence: sequence + 1, uuid: randomUUID() };
+      try {
+        const result = await call(op);
+        sequence = op.sequence; // 平台确认了才前进
+        return result;
+      } catch (err) {
+        if (isSequenceCompareFailedError(err)) {
+          sequence = op.sequence; // 平台已收过该号：让给它，下一个号再来
+          continue;
+        }
+        throw err; // 号不确认 → 调用方用同一个号原地重试（不跳号）
+      }
+    }
+    throw new Error(
+      `[feishu] 卡片操作连续 ${CARD_OP_MAX_ROUNDS} 轮没对上 sequence（平台账本领先过多？下轮 flush 继续追）`,
+    );
+  }
+
+  /** 推一段：流式被关（10 分钟无开启动作自动关）→ 重开 + 同段重推。
+   *  重开沿用未确认的号——平台没收过上次失败的 PUT，这个号就是下一个；若收过（罕见），
+   *  cardOp 会收到 300317 并自动让号。两条路都不会跳号。 */
+  async function pushSection(
+    client: FeishuCardClient,
+    card: string,
+    section: StatusSection,
+  ): Promise<void> {
+    try {
+      await cardOp((op) => client.updateElementText(card, section.id, section.content, op));
+    } catch (err) {
+      if (!isStreamingClosedError(err)) throw err;
+      await cardOp((op) => client.setStreamingMode(card, true, op));
+      await cardOp((op) => client.updateElementText(card, section.id, section.content, op));
+    }
+  }
+
   /** 逐段推送：内容没变且没失败过的段直接跳过（不占 sequence、不触发平台重绘）。 */
   async function pushSections(force: boolean): Promise<void> {
     const card = cardId;
@@ -181,17 +235,7 @@ function attachFeishu(
       const unchanged = lastPushed.get(section.id) === section.content;
       if (!force && unchanged && !failedSections.has(section.id)) continue;
       try {
-        try {
-          sequence += 1;
-          await client.updateElementText(card, section.id, section.content, sequence);
-        } catch (err) {
-          if (!isStreamingClosedError(err)) throw err;
-          // 流式模式超时自动关（官方行为）：重开 + 同段重推
-          sequence += 1;
-          await client.setStreamingMode(card, true, sequence);
-          sequence += 1;
-          await client.updateElementText(card, section.id, section.content, sequence);
-        }
+        await pushSection(client, card, section);
         lastPushed.set(section.id, section.content);
         failedSections.delete(section.id);
       } catch (err) {
@@ -306,10 +350,11 @@ function attachFeishu(
       subscription?.dispose();
       void (async () => {
         await flush(true); // 结局态（completed/stopped）
-        if (cardId !== undefined && cardClient !== undefined) {
-          sequence += 1;
+        const card = cardId;
+        const client = cardClient;
+        if (card !== undefined && client !== undefined) {
           try {
-            await cardClient.setStreamingMode(cardId, false, sequence);
+            await cardOp((op) => client.setStreamingMode(card, false, op));
           } catch (err) {
             logger.warn("关闭流式模式失败（10 分钟后平台会自动关）", { error: String(err) });
           }

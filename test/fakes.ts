@@ -4,7 +4,7 @@
 import type { LooongerEvent } from "looonger-sdk";
 import type { BoardSnapshot, LooongerGoal, QueueMessage, QueueSnapshot, QueueView, TaskOutcome } from "looonger-sdk";
 import { FeishuApiError, type FeishuCardClient, type FeishuEventSource, type FeishuIncoming } from "../src/feishu-client";
-import type { FeishuHandleView } from "../src/frontend";
+import type { FeishuHandleView, TimerHandle } from "../src/frontend";
 
 // ============ FakeCardClient ============
 
@@ -18,6 +18,8 @@ export class FakeCardClient implements FeishuCardClient {
   cardIdCounter = 0;
   /** 下一次 updateElementText 抛一次「流式已关」（验证重开+重试恢复）。 */
   failNextUpdateWithStreamingClosed = false;
+  /** 指定 element_id 的 updateElementText 持续失败（验证单段失败不拖累其他段）。 */
+  failElement: string | undefined;
 
   async createCard(cardJson: string): Promise<string> {
     this.calls.push({ op: "createCard", args: [cardJson] });
@@ -45,6 +47,9 @@ export class FakeCardClient implements FeishuCardClient {
       this.failNextUpdateWithStreamingClosed = false;
       throw new FeishuApiError(300309, "Card streaming closed");
     }
+    if (this.failElement !== undefined && elementId === this.failElement) {
+      throw new FeishuApiError(200860, "Card content exceeds limit");
+    }
   }
 
   async setStreamingMode(cardId: string, enabled: boolean, sequence: number): Promise<void> {
@@ -60,6 +65,15 @@ export class FakeCardClient implements FeishuCardClient {
     for (let i = this.calls.length - 1; i >= 0; i -= 1) {
       const call = this.calls[i];
       if (call?.op === "updateElementText") return call.args[2] as string;
+    }
+    return undefined;
+  }
+
+  /** 某个 element 最后一次 updateElementText 的正文（分段刷新后按段断言用）。 */
+  lastCardTextFor(elementId: string): string | undefined {
+    for (let i = this.calls.length - 1; i >= 0; i -= 1) {
+      const call = this.calls[i];
+      if (call?.op === "updateElementText" && call.args[1] === elementId) return call.args[2] as string;
     }
     return undefined;
   }
@@ -107,13 +121,13 @@ export class ManualTimers {
   private timers = new Map<number, () => void>();
   private nextId = 1;
 
-  setInterval(handler: () => void, _ms: number): unknown {
+  setInterval(handler: () => void, _ms: number): TimerHandle {
     const id = this.nextId++;
     this.timers.set(id, handler);
     return id;
   }
 
-  clearInterval(handle: unknown): void {
+  clearInterval(handle: TimerHandle): void {
     this.timers.delete(handle as number);
   }
 

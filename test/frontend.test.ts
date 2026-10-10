@@ -95,21 +95,73 @@ describe("飞书前端面生命周期", () => {
     expect(dm.cards.calls[1]?.args[0]).toBe("ou_owner");
     // 首屏内容在 createCard 的卡片 JSON 里（流式更新接口还没被调用）
     const cardJson = JSON.parse(cards.calls[0]?.args[0] as string) as {
+      header: { title: { content: string } };
       body: { elements: Array<{ content: string }> };
     };
-    expect(cardJson.body.elements[0]?.content).toContain("测试目标");
+    // 任务本身在卡片头部标题里（正文不再重复引用它）
+    expect(cardJson.header.title.content).toContain("测试目标");
+    // 首屏正文 = 接力图 + 现场标题（结构在，不需要正文重复任务）
+    expect(cardJson.body.elements[0]?.content).toContain("### ");
   });
 
-  test("节流：多个事件只在一轮 tick 推一次更新", async () => {
+  test("节流：事件只在 tick 那轮推；内容没变的段一段都不推", async () => {
     const { handle, cards, timers } = await setup();
     const before = cards.countOp("updateElementText");
     handle.pushEvent({ type: "run-started", sessionId: "s", role: "solver" } as never);
-    handle.pushEvent({ type: "run-settled", sessionId: "s", role: "solver" } as never);
     expect(cards.countOp("updateElementText")).toBe(before); // 未 tick 不推
     timers.tick();
+    expect(cards.countOp("updateElementText")).toBe(before + 1); // scene 段变了 → 只推它
+    timers.tick(); // 内容没变 → 一段都不推
     expect(cards.countOp("updateElementText")).toBe(before + 1);
-    timers.tick(); // 无脏 → 不推
+  });
+
+  test("局部刷新：只推内容变化的段（人类输入只动 footer 段）", async () => {
+    const { handle, source, cards, timers } = await setup();
+    await source.emit(msg({ text: "看看 80 端口" }));
+    const before = cards.countOp("updateElementText");
+    timers.tick();
     expect(cards.countOp("updateElementText")).toBe(before + 1);
+    const last = [...cards.calls].reverse().find((c) => c.op === "updateElementText");
+    expect(last?.args[1]).toBe("status_footer"); // 只有时钟/人类计数那段变了
+    expect(last?.args[2]).toContain("human ×1");
+    expect(handle.humanInputs).toEqual(["看看 80 端口"]);
+  });
+
+  test("单段失败被关在段里：其他段照常更新，失败段下轮自动重推", async () => {
+    const cards = new FakeCardClient();
+    cards.failElement = "status_context"; // 该段的更新持续失败（如卡片体积超限 200860）
+    const source = new FakeEventSource();
+    const timers = new ManualTimers();
+    const handle = new FakeHandle();
+    createFeishuFrontend({
+      config: CONFIG,
+      logger: createSilentLogger(),
+      cardClient: cards,
+      eventSource: source,
+      timers,
+    }).attach(handle as never);
+    await settle();
+    handle.pushEvent({ type: "run-started", sessionId: "s", role: "solver" } as never);
+    handle.pushEvent({
+      type: "context-usage",
+      sessionId: "s",
+      role: "solver",
+      usage: { tokens: 96_000, contextWindow: 200_000, percent: 48 },
+    } as never);
+    timers.tick();
+    await settle();
+    const pushed = cards.calls.filter((c) => c.op === "updateElementText").map((c) => c.args[1]);
+    expect(pushed).toContain("status_scene"); // 没问题的段照常上屏
+    expect(pushed).toContain("status_context"); // 问题段也尝试了（只是失败）
+    // 下一轮：scene 没变不推；context 在重试队列里 → 只有它重推
+    const beforeRetry = cards.countOp("updateElementText");
+    timers.tick();
+    await settle();
+    const retried = cards.calls
+      .slice(cards.calls.findIndex((c) => c.op === "updateElementText") + beforeRetry)
+      .filter((c) => c.op === "updateElementText")
+      .map((c) => c.args[1]);
+    expect(retried).toEqual(["status_context"]);
   });
 
   test("流式被关（300309）→ 自动重开 + 同文重推，卡片不卡死", async () => {
@@ -175,12 +227,20 @@ describe("飞书前端面生命周期", () => {
     expect(handle.stopRequests.length).toBe(0);
   });
 
-  test("/status → 强制立即刷新（不等 tick）", async () => {
+  test("/status → 强制立即刷新（全段重推，不等 tick）", async () => {
     const { source, cards, timers } = await setup();
-    const before = cards.countOp("updateElementText");
     await source.emit(msg({ text: "/status" }));
-    expect(cards.countOp("updateElementText")).toBe(before + 1);
-    timers.tick(); // 刚刷过 → 无新增
+    // force = 每一段都推（与「只推变化的段」互补：用户要的是一次彻底刷新）
+    const pushed = cards.calls.filter((c) => c.op === "updateElementText").map((c) => c.args[1]);
+    expect(pushed).toEqual([
+      "status_scene",
+      "status_conversation",
+      "status_context",
+      "status_progress",
+      "status_footer",
+    ]);
+    timers.tick(); // 刚刷过、内容没变 → 无新增
+    expect(cards.countOp("updateElementText")).toBe(pushed.length);
   });
 
   test("dispose：清定时器 + 终局刷新 + 关流式 + 关长连接 + 退订", async () => {
@@ -190,7 +250,7 @@ describe("飞书前端面生命周期", () => {
     await settle();
     expect(timers.activeCount).toBe(0);
     expect(source.closed).toBe(true);
-    expect(cards.lastCardText()).toContain("任务完成");
+    expect(cards.lastCardTextFor("status_scene")).toContain("task completed");
     const lastStreaming = [...cards.calls].reverse().find((c) => c.op === "setStreamingMode");
     expect(lastStreaming?.args[1]).toBe(false); // streaming off
     // 退订后事件不再触发更新
@@ -238,6 +298,12 @@ describe("飞书前端面生命周期", () => {
     handle.pushEvent({ type: "run-started", sessionId: "s", role: "solver" } as never);
     await settle();
     timers.tick();
-    expect(cards.lastCardText()).toContain("事件 1");
+    // 首屏（建卡实体）就带着同步订阅收进的事件——不用等流式更新
+    const cardJson = JSON.parse(cards.calls[0]?.args[0] as string) as {
+      body: { elements: Array<{ element_id: string; content: string }> };
+    };
+    const scene = cardJson.body.elements.find((el) => el.element_id === "status_scene");
+    expect(scene?.content).toContain("### ");
+    expect(scene?.content).toContain("SOLVER · working");
   });
 });

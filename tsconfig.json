@@ -15,5 +15,5 @@
       "@looonger/view": ["../looonger/packages/view/src/index.ts"]
     }
   },
-  "include": ["src", "test"]
+  "include": ["src", "test", "scripts"]
 }

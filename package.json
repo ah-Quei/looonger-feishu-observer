@@ -12,7 +12,9 @@
     "check": "tsc --noEmit && bun test",
     "typecheck": "tsc --noEmit",
     "test": "bun test",
-    "setup": "bun run src/setup.ts"
+    "setup": "bun run src/setup.ts",
+    "preview": "bun run scripts/mock-preview.ts",
+    "preview:live": "bun run scripts/mock-live.ts"
   },
   "dependencies": {
     "@larksuiteoapi/node-sdk": "^1.74.0"

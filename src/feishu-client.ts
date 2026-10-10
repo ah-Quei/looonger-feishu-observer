@@ -3,12 +3,12 @@
  *  **接口先行**：观察者只依赖这两个接口，测试用内存替身——飞书挂了绝不能影响任务
  *  （所有调用点都 try/catch + logger.warn，见 observer.ts）。
  *
- *  端点（官方文档已核实 2026-09）：
+ *  端点（官方文档已核实）：
  *  - tenant_access_token: POST /open-apis/auth/v3/tenant_access_token/internal
  *  - 创建卡片实体:     POST /open-apis/cardkit/v1/cards            {type:"card_json", data}
  *  - 发送卡片消息:     POST /open-apis/im/v1/messages?receive_id_type=chat_id
  *  - 流式更新文本:     PUT  /open-apis/cardkit/v1/cards/:card_id/elements/:element_id/content
- *  - 更新卡片配置:     PATCH /open-apis/cardkit/v1/cards/:card_id  {settings, sequence}
+ *  - 更新卡片配置:     PATCH /open-apis/cardkit/v1/cards/:card_id/settings  {settings, sequence}
  *  - 回复消息:         POST /open-apis/im/v1/messages/:message_id/reply
  */
 
@@ -184,7 +184,10 @@ export function createLarkCardClient(
     },
 
     async setStreamingMode(cardId, enabled, sequence): Promise<void> {
-      await authed("PATCH", `/open-apis/cardkit/v1/cards/${encodeURIComponent(cardId)}`, {
+      await authed(
+        "PATCH",
+        `/open-apis/cardkit/v1/cards/${encodeURIComponent(cardId)}/settings`,
+        {
         uuid: randomUUID(),
         sequence,
         settings: JSON.stringify({ config: { streaming_mode: enabled } }),

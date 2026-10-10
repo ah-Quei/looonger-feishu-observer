@@ -1,11 +1,6 @@
 /** looonger-feishu-observer 公共出口（独立仓库，只依赖 looonger-sdk 的公共观察面）。 */
 
-export {
-  buildStatusCard,
-  cardJsonString,
-  STATUS_ELEMENT_ID,
-  type CardJson,
-} from "./card";
+export { buildStatusCard, cardJsonString, type CardJson } from "./card";
 export { FEISHU_HELP_TEXT, parseCommand, type FeishuCommand } from "./commands";
 export {
   envOverrides,
@@ -29,15 +24,19 @@ export {
   feishuFrontend,
   type FeishuFrontendOptions,
   type FeishuHandleView,
+  type TimerHandle,
 } from "./frontend";
 export {
   ingestStatus,
   renderStatusMarkdown,
+  renderStatusSections,
   roleChips,
   seedStatus,
+  STATUS_SECTION_IDS,
   type RenderOptions,
   type RoleChip,
   type StatusActivity,
+  type StatusSection,
   type StatusSnapshots,
   type StatusSource,
   type StatusState,

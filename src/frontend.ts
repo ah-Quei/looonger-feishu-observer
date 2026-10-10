@@ -10,14 +10,17 @@
  *  - 普通文本 = 人类输入（`handle.sendHumanInput` → strategist 审查队列，与 TUI 同一条路）；
  *  - `/status` 立即刷卡片；`/stop` 两段式确认后 `handle.requestStop()`；
  *  - 只推**运行状态**（角色接力/队列/目标/占用/结局），不转发三角色消息流正文。
+ *  卡片更新口径：**分段局部刷新**——正文按段（scene/conversation/context/progress/footer）
+ *  各一个 markdown 元素，每次 flush 只推内容变化的段；单段失败只进重试队列下轮重推，
+ *  其他段照常更新——某一段的问题不会再让整块卡片消失。
  */
 
 import { resolve } from "node:path";
 import type { TaskFrontend, TaskHandle } from "looonger-sdk";
 import type { StatusSnapshots, StatusState } from "./status-model";
-import { ingestStatus, renderStatusMarkdown, seedStatus } from "./status-model";
+import { ingestStatus, renderStatusSections, seedStatus } from "./status-model";
 import { parseCommand, FEISHU_HELP_TEXT } from "./commands";
-import { buildStatusCard, cardJsonString, STATUS_ELEMENT_ID } from "./card";
+import { buildStatusCard, cardJsonString } from "./card";
 import { loadFeishuConfig, type FeishuConfig } from "./config";
 import {
   createLarkCardClient,
@@ -45,6 +48,9 @@ export interface FeishuHandleView {
   adopt(cleanup: { dispose(): void }): void;
 }
 
+/** 定时器句柄：Node 的 `Timeout` / 浏览器与测试替身的 `number` 都要能装下。 */
+export type TimerHandle = ReturnType<typeof setInterval> | number;
+
 export interface FeishuFrontendOptions {
   /** 已加载的配置（测试/宿主直传）；与 configPath 二选一。 */
   readonly config?: FeishuConfig;
@@ -52,7 +58,10 @@ export interface FeishuFrontendOptions {
   readonly configPath?: string;
   readonly logger?: FeishuLogger;
   readonly now?: () => number;
-  readonly timers?: { setInterval(handler: () => void, ms: number): unknown; clearInterval(handle: unknown): void };
+  readonly timers?: {
+    setInterval(handler: () => void, ms: number): TimerHandle;
+    clearInterval(handle: TimerHandle): void;
+  };
   readonly cardClient?: FeishuCardClient;
   readonly eventSource?: FeishuEventSource;
 }
@@ -61,12 +70,14 @@ export function createFeishuFrontend(options: FeishuFrontendOptions = {}): TaskF
   const logger = options.logger ?? createScopedLogger();
   const now = options.now ?? (() => Date.now());
   const timers = options.timers ?? {
-    setInterval: (handler, ms) => setInterval(handler, ms),
+    setInterval: (handler, ms): TimerHandle => setInterval(handler, ms),
     clearInterval: (handle) => clearInterval(handle as ReturnType<typeof setInterval>),
   };
 
   return {
     attach(handle: TaskHandle): void {
+      // SAFETY: TaskHandle 是 FeishuHandleView 的结构超集（观察者只用其子集方法）；
+      // 编译期无法从 SDK 泛型证明这一点，运行时由 attachFeishu 只调用子集来保证。
       attachFeishu(handle as unknown as FeishuHandleView, options, logger, now, timers);
     },
   };
@@ -77,7 +88,10 @@ function attachFeishu(
   options: FeishuFrontendOptions,
   logger: FeishuLogger,
   now: () => number,
-  timers: { setInterval(handler: () => void, ms: number): unknown; clearInterval(handle: unknown): void },
+  timers: {
+    setInterval(handler: () => void, ms: number): TimerHandle;
+    clearInterval(handle: TimerHandle): void;
+  },
 ): void {
   let state: StatusState;
   let cursor: number;
@@ -90,7 +104,6 @@ function attachFeishu(
       try {
         for (const event of handle.eventsSince(cursor)) state = ingestStatus(state, event);
         cursor = handle.revision;
-        dirty = true;
       } catch (err) {
         logger.warn("事件搬运失败（跳过本批）", { error: String(err) });
       }
@@ -100,19 +113,23 @@ function attachFeishu(
     return;
   }
 
-  let dirty = true;
   let config: FeishuConfig | undefined = options.config;
   let cardClient: FeishuCardClient | undefined = options.cardClient;
   let eventSource: FeishuEventSource | undefined = options.eventSource;
   let cardId: string | undefined;
-  let timerHandle: unknown;
+  let timerHandle: TimerHandle | undefined;
   let sequence = 0;
   let flushing = false;
+  let flushAgain = false;
   let pendingStopAt: number | undefined;
+  /** 每个元素最后一次推送成功的正文——局部刷新的比对基准：没变的段不推。 */
+  const lastPushed = new Map<string, string>();
+  /** 推送失败的元素：下轮重推（即使内容没变——失败不该让某段停在旧内容）。 */
+  const failedSections = new Set<string>();
 
   function renderOptions(): { queueTail: number; showBoard: boolean } {
     return {
-      queueTail: config?.queueTail ?? 3,
+      queueTail: config?.queueTail ?? 6,
       showBoard: config?.showBoard ?? true,
     };
   }
@@ -134,34 +151,56 @@ function attachFeishu(
     };
   }
 
-  /** 唯一碰飞书卡片 IO 的地方；失败保持脏标记下轮重试，流式被关则重开后重试一次。 */
+  /** 唯一碰飞书卡片 IO 的地方：**逐段局部刷新**——只推内容变化的段（force = 全推）。
+   *  单段失败只拖累它自己（进 failedSections 下轮重推），其他段照常更新——卡片永远不会
+   *  因为某一段的问题整块消失。流式被关（10 分钟无开启动作自动关）则重开后重推该段。 */
   async function flush(force: boolean): Promise<void> {
     if (cardId === undefined || cardClient === undefined) return;
     if (flushing) {
-      if (force) dirty = true;
+      flushAgain = true; // 上一轮还在跑：合并进来，跑完补一轮（sequence 须严格递增，不能并发交错）
       return;
     }
-    if (!dirty && !force) return;
     flushing = true;
     try {
-      const text = renderStatusMarkdown(state, snapshots(), renderOptions(), now());
-      sequence += 1;
-      try {
-        await cardClient.updateElementText(cardId, STATUS_ELEMENT_ID, text, sequence);
-        dirty = false;
-      } catch (err) {
-        if (!isStreamingClosedError(err)) throw err;
-        // 流式模式 10 分钟无操作会自动关（官方行为）：重开 + 同文本重推
-        sequence += 1;
-        await cardClient.setStreamingMode(cardId, true, sequence);
-        await cardClient.updateElementText(cardId, STATUS_ELEMENT_ID, text, sequence);
-        dirty = false;
-      }
-    } catch (err) {
-      dirty = true;
-      logger.warn("卡片更新失败（下轮重试）", { error: String(err) });
+      do {
+        flushAgain = false;
+        await pushSections(force);
+      } while (flushAgain);
     } finally {
       flushing = false;
+    }
+  }
+
+  /** 逐段推送：内容没变且没失败过的段直接跳过（不占 sequence、不触发平台重绘）。 */
+  async function pushSections(force: boolean): Promise<void> {
+    const card = cardId;
+    const client = cardClient;
+    if (card === undefined || client === undefined) return;
+    const sections = renderStatusSections(state, snapshots(), renderOptions(), now());
+    for (const section of sections) {
+      const unchanged = lastPushed.get(section.id) === section.content;
+      if (!force && unchanged && !failedSections.has(section.id)) continue;
+      try {
+        try {
+          sequence += 1;
+          await client.updateElementText(card, section.id, section.content, sequence);
+        } catch (err) {
+          if (!isStreamingClosedError(err)) throw err;
+          // 流式模式超时自动关（官方行为）：重开 + 同段重推
+          sequence += 1;
+          await client.setStreamingMode(card, true, sequence);
+          sequence += 1;
+          await client.updateElementText(card, section.id, section.content, sequence);
+        }
+        lastPushed.set(section.id, section.content);
+        failedSections.delete(section.id);
+      } catch (err) {
+        failedSections.add(section.id);
+        logger.warn("卡片段落更新失败（下轮重推；其他段不受影响）", {
+          element: section.id,
+          error: String(err),
+        });
+      }
     }
   }
 
@@ -245,10 +284,12 @@ function attachFeishu(
       return;
     }
     try {
-      const initial = renderStatusMarkdown(state, snapshots(), renderOptions(), now());
+      const sections = renderStatusSections(state, snapshots(), renderOptions(), now());
       const title = state.objective.length > 0 ? state.objective : `任务 ${handle.taskId}`;
-      cardId = await cardClient.createCard(cardJsonString(buildStatusCard(title, initial)));
+      cardId = await cardClient.createCard(cardJsonString(buildStatusCard(title, sections)));
       await cardClient.sendCardToChat(config.chatId, cardId, config.receiveIdType);
+      // 首屏各段随建卡实体下发：记进 lastPushed，之后只推真变了的段
+      for (const section of sections) lastPushed.set(section.id, section.content);
       logger.info("状态卡片已推送", { taskId: handle.taskId, cardId });
     } catch (err) {
       cardId = undefined;
